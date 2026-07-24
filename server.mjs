@@ -21,6 +21,19 @@ async function listLicenses() { if (pool) return (await pool.query("SELECT licen
 async function createLicense(days, note) { const licenseKey = key(); const duration = Math.max(1, Number(days || 30)); const record = { license_key: licenseKey, expires_at: null, duration_days: duration, activated_at: null, device_id: null, revoked: false, created_at: new Date().toISOString(), note: note || "" }; if (pool) await pool.query("INSERT INTO licenses(license_key, expires_at, duration_days, activated_at, device_id, note) VALUES($1,NULL,$2,NULL,NULL,$3)", [licenseKey, duration, record.note]); else memory.set(licenseKey, record); return record; }
 async function createLicenses(count, days, note) { const result = []; for (let i = 0; i < Math.min(1000, Math.max(1, Number(count || 1))); i++) result.push(await createLicense(days, note)); return result; }
 async function activateLicense(item, deviceId) { const activated = new Date(); const expires = new Date(activated.getTime() + Math.max(1, Number(item.duration_days || 30)) * 86400000); if (pool) await pool.query("UPDATE licenses SET activated_at=$1, expires_at=$2, device_id=$3 WHERE license_key=$4 AND activated_at IS NULL", [activated, expires, deviceId, item.license_key]); else { item.activated_at = activated.toISOString(); item.expires_at = expires.toISOString(); item.device_id = deviceId; } item.activated_at = item.activated_at || activated.toISOString(); item.expires_at = item.expires_at || expires.toISOString(); item.device_id = item.device_id || deviceId; return item; }
+async function updateLicense(licenseKey, input) {
+  const days = Number(input.days || 0);
+  if (!Number.isInteger(days) || days < -3650 || days > 3650) throw new Error("Gün değeri -3650 ile 3650 arasında olmalı.");
+  if (pool) {
+    if (input.reactivate === true) await pool.query("UPDATE licenses SET revoked=false WHERE license_key=$1", [licenseKey]);
+    if (days !== 0) await pool.query("UPDATE licenses SET duration_days=GREATEST(1, duration_days+$1), expires_at=CASE WHEN expires_at IS NULL THEN NULL ELSE expires_at + ($1 * interval '1 day') END WHERE license_key=$2", [days, licenseKey]);
+    return getLicense(licenseKey);
+  }
+  const item = memory.get(licenseKey); if (!item) return null;
+  if (input.reactivate === true) item.revoked = false;
+  if (days !== 0) { item.duration_days = Math.max(1, item.duration_days + days); if (item.expires_at) item.expires_at = new Date(new Date(item.expires_at).getTime() + days * 86400000).toISOString(); }
+  return item;
+}
 async function route(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
   if (request.method === "GET" && url.pathname === "/") return staticFile(response, "index.html", "text/html; charset=utf-8");
@@ -38,6 +51,7 @@ async function route(request, response) {
   if (!adminKey || request.headers.authorization !== `Bearer ${adminKey}`) return json(response, 401, { error: "Unauthorized" });
   if (url.pathname === "/admin/api/licenses" && request.method === "GET") return json(response, 200, await listLicenses());
   if (url.pathname === "/admin/api/licenses/generate" && request.method === "POST") { const input = await body(request); const records = await createLicenses(input.count || 1, input.days, input.note); return json(response, 201, input.count > 1 ? { licenses: records } : records[0]); }
+  const update = url.pathname.match(/^\/admin\/api\/licenses\/([^/]+)\/update$/); if (update && request.method === "POST") { const input = await body(request); const item = await updateLicense(decodeURIComponent(update[1]), input); return item ? json(response, 200, item) : json(response, 404, { error: "License not found" }); }
   const revoke = url.pathname.match(/^\/admin\/api\/licenses\/([^/]+)\/revoke$/); if (revoke && request.method === "POST") { const licenseKey = decodeURIComponent(revoke[1]); if (pool) await pool.query("UPDATE licenses SET revoked=true WHERE license_key=$1", [licenseKey]); else if (memory.has(licenseKey)) memory.get(licenseKey).revoked = true; return json(response, 200, { ok: true, licenseKey }); }
   return json(response, 404, { error: "Not found" });
 }
