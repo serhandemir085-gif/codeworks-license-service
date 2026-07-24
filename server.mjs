@@ -19,6 +19,7 @@ async function init() { if (pool) { await pool.query(`CREATE TABLE IF NOT EXISTS
 async function getLicense(licenseKey) { if (pool) return (await pool.query("SELECT * FROM licenses WHERE license_key=$1", [licenseKey])).rows[0]; return memory.get(licenseKey); }
 async function listLicenses() { if (pool) return (await pool.query("SELECT license_key, expires_at, duration_days, activated_at, revoked, created_at, note FROM licenses ORDER BY created_at DESC")).rows; return [...memory.values()].sort((a, b) => b.created_at.localeCompare(a.created_at)); }
 async function createLicense(days, note) { const licenseKey = key(); const duration = Math.max(1, Number(days || 30)); const record = { license_key: licenseKey, expires_at: null, duration_days: duration, activated_at: null, revoked: false, created_at: new Date().toISOString(), note: note || "" }; if (pool) await pool.query("INSERT INTO licenses(license_key, expires_at, duration_days, activated_at, note) VALUES($1,NULL,$2,NULL,$3)", [licenseKey, duration, record.note]); else memory.set(licenseKey, record); return record; }
+async function createLicenses(count, days, note) { const result = []; for (let i = 0; i < Math.min(1000, Math.max(1, Number(count || 1))); i++) result.push(await createLicense(days, note)); return result; }
 async function activateLicense(item) { const activated = new Date(); const expires = new Date(activated.getTime() + Math.max(1, Number(item.duration_days || 30)) * 86400000); if (pool) await pool.query("UPDATE licenses SET activated_at=$1, expires_at=$2 WHERE license_key=$3 AND activated_at IS NULL", [activated, expires, item.license_key]); else { item.activated_at = activated.toISOString(); item.expires_at = expires.toISOString(); } item.activated_at = item.activated_at || activated.toISOString(); item.expires_at = item.expires_at || expires.toISOString(); return item; }
 async function route(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
@@ -28,7 +29,7 @@ async function route(request, response) {
   if (!url.pathname.startsWith("/admin/api/")) return json(response, 404, { error: "Not found" });
   if (!adminKey || request.headers.authorization !== `Bearer ${adminKey}`) return json(response, 401, { error: "Unauthorized" });
   if (url.pathname === "/admin/api/licenses" && request.method === "GET") return json(response, 200, await listLicenses());
-  if (url.pathname === "/admin/api/licenses/generate" && request.method === "POST") { const input = await body(request); return json(response, 201, await createLicense(input.days, input.note)); }
+  if (url.pathname === "/admin/api/licenses/generate" && request.method === "POST") { const input = await body(request); const records = await createLicenses(input.count || 1, input.days, input.note); return json(response, 201, input.count > 1 ? { licenses: records } : records[0]); }
   const revoke = url.pathname.match(/^\/admin\/api\/licenses\/([^/]+)\/revoke$/); if (revoke && request.method === "POST") { const licenseKey = decodeURIComponent(revoke[1]); if (pool) await pool.query("UPDATE licenses SET revoked=true WHERE license_key=$1", [licenseKey]); else if (memory.has(licenseKey)) memory.get(licenseKey).revoked = true; return json(response, 200, { ok: true, licenseKey }); }
   return json(response, 404, { error: "Not found" });
 }
