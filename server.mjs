@@ -7,7 +7,7 @@ import pg from "pg";
 const { Pool } = pg;
 const port = Number(process.env.PORT || 10000);
 const adminKey = process.env.ADMIN_KEY;
-const pool = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } }) : null;
+let pool = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 10000 }) : null;
 const memory = new Map();
 const publicDir = path.join(process.cwd(), "public");
 
@@ -15,7 +15,20 @@ function key() { const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; const part
 function json(response, status, data) { response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify(data)); }
 async function body(request) { const chunks = []; for await (const chunk of request) chunks.push(chunk); return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); }
 async function staticFile(response, fileName, contentType) { try { const data = await readFile(path.join(publicDir, fileName)); response.writeHead(200, { "content-type": contentType, "cache-control": "no-store" }); response.end(data); } catch { json(response, 404, { error: "Not found" }); } }
-async function init() { if (pool) { await pool.query(`CREATE TABLE IF NOT EXISTS licenses (license_key text PRIMARY KEY, expires_at timestamptz, duration_days integer NOT NULL DEFAULT 30, activated_at timestamptz, device_id text, revoked boolean NOT NULL DEFAULT false, created_at timestamptz NOT NULL DEFAULT now(), note text)`); await pool.query(`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS duration_days integer NOT NULL DEFAULT 30`); await pool.query(`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS activated_at timestamptz`); await pool.query(`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS device_id text`); await pool.query(`ALTER TABLE licenses ALTER COLUMN expires_at DROP NOT NULL`); } }
+async function init() {
+  if (!pool) return;
+  try {
+    await pool.query(`CREATE TABLE IF NOT EXISTS licenses (license_key text PRIMARY KEY, expires_at timestamptz, duration_days integer NOT NULL DEFAULT 30, activated_at timestamptz, device_id text, revoked boolean NOT NULL DEFAULT false, created_at timestamptz NOT NULL DEFAULT now(), note text)`);
+    await pool.query(`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS duration_days integer NOT NULL DEFAULT 30`);
+    await pool.query(`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS activated_at timestamptz`);
+    await pool.query(`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS device_id text`);
+    await pool.query(`ALTER TABLE licenses ALTER COLUMN expires_at DROP NOT NULL`);
+  } catch (error) {
+    console.error(`Database unavailable; using in-memory storage: ${error.message}`);
+    await pool.end().catch(() => {});
+    pool = null;
+  }
+}
 async function getLicense(licenseKey) { if (pool) return (await pool.query("SELECT * FROM licenses WHERE license_key=$1", [licenseKey])).rows[0]; return memory.get(licenseKey); }
 async function listLicenses() { if (pool) return (await pool.query("SELECT license_key, expires_at, duration_days, activated_at, device_id IS NOT NULL AS device_bound, revoked, created_at, note FROM licenses ORDER BY created_at DESC")).rows; return [...memory.values()].sort((a, b) => b.created_at.localeCompare(a.created_at)); }
 async function createLicense(days, note) { const licenseKey = key(); const duration = Math.max(1, Number(days || 30)); const record = { license_key: licenseKey, expires_at: null, duration_days: duration, activated_at: null, device_id: null, revoked: false, created_at: new Date().toISOString(), note: note || "" }; if (pool) await pool.query("INSERT INTO licenses(license_key, expires_at, duration_days, activated_at, device_id, note) VALUES($1,NULL,$2,NULL,NULL,$3)", [licenseKey, duration, record.note]); else memory.set(licenseKey, record); return record; }
