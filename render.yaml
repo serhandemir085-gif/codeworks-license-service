@@ -8,11 +8,8 @@ services:
     startCommand: npm start
     envVars:
       - key: DATABASE_URL
-        value: ""
-        sync: false
+        value: postgresql://postgres:NyEIDqOD7LafesI9@db.oxaxwgklluykwkqrxqsf.supabase.co:5432/postgres?sslmode=require
       - key: ADMIN_KEY
         value: CW-Admin-717c82ed7aaf43aab2eaadc194328630
-        sync: false
       - key: TOKEN_SECRET
         value: nwQCvOOM8VcDgMfqgLwEtKAmJhfWmMurBduo4auadNE=
-        sync: false
