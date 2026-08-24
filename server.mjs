@@ -18,8 +18,9 @@ async function staticFile(response, fileName, contentType) { try { const data = 
 async function init() {
   if (!pool) return;
   try {
-    await pool.query(`CREATE TABLE IF NOT EXISTS licenses (license_key text PRIMARY KEY, expires_at timestamptz, duration_days integer NOT NULL DEFAULT 30, activated_at timestamptz, device_id text, revoked boolean NOT NULL DEFAULT false, created_at timestamptz NOT NULL DEFAULT now(), note text)`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS licenses (license_key text PRIMARY KEY, expires_at timestamptz, duration_days integer NOT NULL DEFAULT 30, unlimited boolean NOT NULL DEFAULT false, activated_at timestamptz, device_id text, revoked boolean NOT NULL DEFAULT false, created_at timestamptz NOT NULL DEFAULT now(), note text)`);
     await pool.query(`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS duration_days integer NOT NULL DEFAULT 30`);
+    await pool.query(`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS unlimited boolean NOT NULL DEFAULT false`);
     await pool.query(`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS activated_at timestamptz`);
     await pool.query(`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS device_id text`);
     await pool.query(`ALTER TABLE licenses ALTER COLUMN expires_at DROP NOT NULL`);
@@ -30,10 +31,10 @@ async function init() {
   }
 }
 async function getLicense(licenseKey) { if (pool) return (await pool.query("SELECT * FROM licenses WHERE license_key=$1", [licenseKey])).rows[0]; return memory.get(licenseKey); }
-async function listLicenses() { if (pool) return (await pool.query("SELECT license_key, expires_at, duration_days, activated_at, device_id IS NOT NULL AS device_bound, revoked, created_at, note FROM licenses ORDER BY created_at DESC")).rows; return [...memory.values()].sort((a, b) => b.created_at.localeCompare(a.created_at)); }
-async function createLicense(days, note) { const licenseKey = key(); const duration = Math.max(1, Number(days || 30)); const record = { license_key: licenseKey, expires_at: null, duration_days: duration, activated_at: null, device_id: null, revoked: false, created_at: new Date().toISOString(), note: note || "" }; if (pool) await pool.query("INSERT INTO licenses(license_key, expires_at, duration_days, activated_at, device_id, note) VALUES($1,NULL,$2,NULL,NULL,$3)", [licenseKey, duration, record.note]); else memory.set(licenseKey, record); return record; }
+async function listLicenses() { if (pool) return (await pool.query("SELECT license_key, expires_at, duration_days, unlimited, activated_at, device_id IS NOT NULL AS device_bound, revoked, created_at, note FROM licenses ORDER BY created_at DESC")).rows; return [...memory.values()].sort((a, b) => b.created_at.localeCompare(a.created_at)); }
+async function createLicense(days, note) { const licenseKey = key(); const duration = Math.max(1, Number(days || 30)); const record = { license_key: licenseKey, expires_at: null, duration_days: duration, unlimited: false, activated_at: null, device_id: null, revoked: false, created_at: new Date().toISOString(), note: note || "" }; if (pool) await pool.query("INSERT INTO licenses(license_key, expires_at, duration_days, unlimited, activated_at, device_id, note) VALUES($1,NULL,$2,false,NULL,NULL,$3)", [licenseKey, duration, record.note]); else memory.set(licenseKey, record); return record; }
 async function createLicenses(count, days, note) { const result = []; for (let i = 0; i < Math.min(1000, Math.max(1, Number(count || 1))); i++) result.push(await createLicense(days, note)); return result; }
-async function activateLicense(item, deviceId) { const activated = new Date(); const expires = new Date(activated.getTime() + Math.max(1, Number(item.duration_days || 30)) * 86400000); if (pool) await pool.query("UPDATE licenses SET activated_at=$1, expires_at=$2, device_id=$3 WHERE license_key=$4 AND activated_at IS NULL", [activated, expires, deviceId, item.license_key]); else { item.activated_at = activated.toISOString(); item.expires_at = expires.toISOString(); item.device_id = deviceId; } item.activated_at = item.activated_at || activated.toISOString(); item.expires_at = item.expires_at || expires.toISOString(); item.device_id = item.device_id || deviceId; return item; }
+async function activateLicense(item, deviceId) { const activated = new Date(); const expires = item.unlimited ? null : new Date(activated.getTime() + Math.max(1, Number(item.duration_days || 30)) * 86400000); if (pool) await pool.query("UPDATE licenses SET activated_at=$1, expires_at=$2, device_id=$3 WHERE license_key=$4 AND activated_at IS NULL", [activated, expires, deviceId, item.license_key]); else { item.activated_at = activated.toISOString(); item.expires_at = expires?.toISOString() || null; item.device_id = deviceId; } item.activated_at = item.activated_at || activated.toISOString(); item.expires_at = item.expires_at || expires?.toISOString() || null; item.device_id = item.device_id || deviceId; return item; }
 async function updateLicense(licenseKey, input) {
   const days = Number(input.days || 0);
   if (!Number.isInteger(days) || days < -3650 || days > 3650) throw new Error("Gün değeri -3650 ile 3650 arasında olmalı.");
@@ -56,8 +57,8 @@ async function route(request, response) {
     const item = await getLicense(String(input.licenseKey || "").trim().toUpperCase());
     if (!item || item.revoked) return json(response, 403, { valid: false, error: "Lisans geçersiz veya iptal edilmiş." });
     if (item.device_id && item.device_id !== deviceId) return json(response, 403, { valid: false, error: "Bu lisans başka bir cihaza bağlı." });
-    if (!item.activated_at || !item.expires_at) await activateLicense(item, deviceId);
-    if (new Date(item.expires_at) <= new Date()) return json(response, 403, { valid: false, error: "Lisans süresi dolmuş." });
+    if (!item.activated_at || (!item.unlimited && !item.expires_at)) await activateLicense(item, deviceId);
+    if (!item.unlimited && new Date(item.expires_at) <= new Date()) return json(response, 403, { valid: false, error: "Lisans süresi dolmuş." });
     return json(response, 200, { valid: true, licenseKey: item.license_key, activatedAt: item.activated_at, expiresAt: item.expires_at, deviceBound: true, token: crypto.createHmac("sha256", process.env.TOKEN_SECRET || "change-me").update(item.license_key + item.expires_at + item.device_id).digest("hex") });
   }
   if (!url.pathname.startsWith("/admin/api/")) return json(response, 404, { error: "Not found" });
