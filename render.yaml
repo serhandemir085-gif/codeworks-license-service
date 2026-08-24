@@ -8,13 +8,14 @@ services:
     startCommand: npm start
     envVars:
       - key: DATABASE_URL
-        fromDatabase:
-          name: codeworks-license-db
-          property: connectionString
+        value: postgresql://postgres:NyEIDqOD7LafesI9@db.oxaxwgklluykwkqrxqsf.supabase.co:5432/postgres?sslmode=require
+        sync: false
       - key: ADMIN_KEY
-        generateValue: true
+        value: CW-Admin-717c82ed7aaf43aab2eaadc194328630
+        sync: false
       - key: TOKEN_SECRET
-        generateValue: true
+        value: nwQCvOOM8VcDgMfqgLwEtKAmJhfWmMurBduo4auadNE=
+        sync: false
 databases:
   - name: codeworks-license-db
     plan: free
